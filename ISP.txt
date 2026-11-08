@@ -1,0 +1,339 @@
+ISP
+
+hostnamectl set-hostname isp.au-team.irpo
+cd /etc/net/ifaces/
+cp -r ens3 ens4
+cp -r ens3 ens5
+cd /etc/net/ifaces/ens3
+vim options 
+BOOTPROTO ---> dhcp
+cd /etc/net/ifaces/
+vim ens4/ipv4address
+Задаем айпи со 2 задания в сторону HQ-RTR, если 0 на конце то меняем на 1 172.16.1.1/28 - как пример
+vim ens5/pv4address
+Задаем айпи со 2 задания в сторону BR-RTR, если 0 на конце то меняем на 1 172.16.2.1/28 - как пример
+system restart network
+ip a - проверка
+vim /etc/net/sysctl.conf
+в файле должно быть в строчке net.ipv4.ip_forward = 1 
+system restart network
+(если iptables нет то)
+apt-get update
+apt-get install iptables
+(если есть то)
+iptables –t nat –A POSTROUTING –o ens3 –j MASQUERADE
+iptables-save >> /etc/sysconfig/iptables
+systemctl enable --now iptables
+exit
+timedatectl (если там нет ничего то) timedatectl set-timezone Europe/Moscow
+ISP для 1 модуля настроен!!!
+
+
+HQ-RTR
+
+en
+conf t
+hostname hq-rtr
+ip domain-name au-team.irpo
+end
+write memory
+en
+conf t
+interface isp
+ip address (со 2 задания в сторону HQ-RTR c 2 на конце если в айпи 0 на конце) 172.16.1.2/28 - как пример
+exit
+port ge0
+service-instance isp/ge0
+encapsulation untagged
+connect ip interface isp
+end
+write memory
+en
+conf t
+interface vl100
+ip address (c 1 задания влан 100 не более 32 адресов из 10.10.100.0/24, 32 адреса это 2^5, 5 - это биты их нужно вычесть из 32 бит возможных получится 27 это и будет маска) 10.10.100.1/27 - как пример (если адресов x то ищем ближайшую большую степень и делаем дальше)
+exit
+interface vl200
+ip address (см. выше) 10.10.200.1/28 - как пример
+exit
+interface vl999
+ip address 10.10.30.1/29- как пример
+exit
+port ge1
+service-instance lv100/ge1
+encapsulation dot1q 100
+rewrite pop 1
+connect ip interface vl100
+exit
+service-instance lv200/ge1
+encapsulation dot1q 200
+rewrite pop 1
+connect ip interface vl200
+exit
+service-instance lv999/ge1
+encapsulation dot1q 999
+rewrite pop 1
+end
+write memory
+sh ip interface brief - проверка
+conf t
+ip route 0.0.0.0 0.0.0.0(Задаем айпи со 2 задания в сторону HQ-RTR, если 0 на конце то меняем на 1)172.16.1.1 - как пример, без маски
+end
+write memory
+show users localdb
+(если там нет net_admin)
+en
+conf t
+username net_admin
+password P@ssw0rd
+role admin
+end
+write memory
+sh interface tunnel.0 (если там нет ничего то)
+en
+conf t 
+interface tunnel.0
+ip address (с 6 задания, минимальная маска /30) 10.10.10.1/30 - как пример
+ip tunnel (c айпи hq-rtr и br-rtr) 172.16.1.2 172.1.2.2 (как пример) mode gre
+end
+write memory
+show ip route (если там ничего нет что скорее всего то)
+en
+conf t 
+router ospf 0
+network 10.10.100.0/27 - (как пример айпи влана 100 только с 0 на конце) area 0
+network 10.10.200.0/28 - (тож самое только влан 200) area 0
+network 10.10.30.0/29 - (влан 999) area 0
+network 10.10.10.0/30 - (гре) area 0
+passive-interface default
+no passive-interface tunnel.0
+area 0 authentication
+exit
+interface tunnel.0
+ip ospf authentication message-digest
+ip ospf message-digest-key 1 md5 P@ssw0rd
+end
+write memory
+en
+conf t
+interface isp
+ip nat outside
+exit
+interface vl100
+ip nat inside
+exit
+interface vl200
+ip nat inside
+exit
+interface vl999
+ip nat inside
+exit
+ip nat pool HQ 10.10.0.1-10.10.200.254 (крч это диапозон который учитывает все сети, что бы его расчитать нужно взять самый малый ( в данном случае это 10.10.0.1 (до гре) и самый большой с самым большим адресом (это 10.10.200.254 - влан 200 последний пользователь)) - как пример
+ip nat source dynamic inside-to-outside pool HQ overload interface isp
+end
+write memory
+en
+conf t
+ip pool HQ-Clients 10.10.200.2-10.10.200.14 (крч тут 200 влан и в 1 задании сказано про ограничение из 16 адресов 0- адрес сети, 1- адрес роутера, 15- широковещательная сеть, поэтому 14 на конце)
+dhcp-server 1
+pool HQ-Clients 1
+mask 255.255.255.240 - такая маска потому что 16 адресов из 1 задания (224 - 32, 192 - 64 и тд)
+gateway 10.10.200.1 - хз, потому что у влана 200 такой же лол
+dns 10.10.100.2 - влан на сервак поэтому так
+domain-name au-team.irpo
+exit
+exit
+interface vl200
+dhcp-server 1
+exit
+en
+conf t
+write memory
+ntp timezone utc+3
+end
+write memory
+HQ-RTR настроен для 1 модуля (я *****)!!!
+
+
+BR-RTR
+
+en
+conf t
+hostname br-rtr
+ip domain-name au-team.irpo
+end
+write memory
+en
+conf t
+interface isp
+ip address 172.16.2.2/28
+exit
+interface br
+ip address 10.20.10.1/30
+exit
+port ge0
+service-instance isp/ge0
+encapsulation untagged
+connect ip interface isp
+exit
+exit
+port ge1
+service-instance br/ge1
+encapsulation untagged
+connect ip interface br
+end
+en
+conf t
+username net_admin
+password P@ssw0rd
+role admin
+end
+write memory
+en
+conf t
+interface tunnel.0
+ip address 10.10.10.2/30
+ip tunnel 172.16.2.2 172.16.1.2 mode gre
+exit
+write memory
+en
+conf t
+ip route 0.0.0.0 0.0.0.0 172.16.2.1
+end
+write memory
+en
+conf t
+router ospf 0
+network 10.20.10.0/30 area 0
+network 10.10.10.0/30 area 0
+passive-interface default
+no passive-interface tunnel.0
+no passive-interface fw
+area 0 authentication
+exit
+
+interface tunnel.0
+ip ospf authentication message-digest 
+ip ospf message-digest-key 1 md5 P@ssw0rd
+exit
+
+interface fw 
+ip ospf authentication message-digest 
+ip ospf message-digest-key 1 md5 P@ssw0rd
+exit
+en
+conf t
+interface isp
+ip nat outside
+exit
+interface fw
+ip nat inside
+exit
+ip nat pool BR 10.0.0.1-10.254.254.254
+ip nat source dynamic inside-to-outside pool BR overload interface isp
+end
+write memory
+show ntp timezone
+en
+conf t
+ntp timezone utc+3
+BR-SRV НАСТРОЕН
+------------------------------------------------------------------------------------------------------------------------------------------------
+
+HQ-SW
+
+hostnamectl set-hostname hq-sw.au-team.irpo
+ovs-vsctl set port ens3 trunks=[100, 200, 999]
+ovs-vsctl set port ens4 tag=100
+ovs-vsctl set port ens5 tag=200
+ovs-vsctl set port MGMT tag=999
+cd /etc/net/ifaces/MGMT
+vim options
+echo "10.10.30.2/29" > ipv4address
+systemctl restart network
+
+
+HQ-SRV
+
+
+hostnamectl set-hostname hq-srv.au-team.irpo
+
+cd /etc/net/ifaces/ens3
+vim options        
+echo "10.10.100.2/27" > ipv4address
+echo "default via 10.10.100.1" > ipv4route
+
+vim resolv.conf
+search au-team.irpo
+nameserver 127.0.0.1
+nameserver 77.88.8.8
+
+systemctl restart network
+
+
+useradd -u 2026 -m -s /bin/bash sshuser
+echo "sshuser:P@ssw0rd" | chpasswd
+
+vim /etc/sudoers
+# Раскомментируем строку (убираем знак #):
+WHEEL_USERS ALL=(ALL:ALL) NOPASSWD: ALL
+
+vim /etc/openssh/sshd_config
+# Находим и изменяем параметры:
+MaxAuthTries 2
+Banner /etc/openssh/banner
+
+# Создаем файл баннера:
+vim /etc/openssh/banner
+# Пишем текст:
+Authorized access only
+
+systemctl restart sshd
+
+vim /etc/bind/options.conf
+# Настраиваем директивы: listen-on { 10.10.100.2; }; forwarders { 77.88.8.8; }; allow-query { any; };
+
+vim /etc/bind/rfc1912.conf
+# Проверяем или создаем мастер-зоны "au-team.irpo" и "10.10.in-addr.arpa"
+
+vim /etc/bind/zone/au-team.irpo.zone
+# Исправляем почту администратора в SOA записи на root.au-team.irpo.
+
+systemctl enable --now bind.service
+
+
+HQ-CLI
+
+hostnamectl set-hostname hq-cli.au-team.irpo
+
+
+BR-CLI
+su –
+# Пароль root-пользователя: toor
+
+hostnamectl set-hostname br-cli.au-team.irpo
+mv /etc/net/ifaces/ens18 /etc/net/ifaces/ens3  # Переименовываем, если имя сбилось
+
+cd /etc/net/ifaces/ens3
+vim options # Убеждаемся, что BOOTPROTO=static
+
+echo "10.20.30.2/29" > ipv4address
+echo "default via 10.20.30.1" > ipv4route
+echo "nameserver 10.10.100.2" > resolv.conf
+
+systemctl restart network
+reboot
+
+
+
+
+
+
+
+
+
+
+
+
+
+
